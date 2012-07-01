@@ -2,6 +2,7 @@ LDAP-Auth
 ================
 
 This bundle allows you to authenticate users against an LDAP server. Only tested against Windows Directory, but I'm happy to include support for others if there is a need.
+*Note: This bundle requires the PHP LDAP extension to be installed.*
 
 ## Installation
 ### Get the bundle
