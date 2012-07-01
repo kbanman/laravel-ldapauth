@@ -1,4 +1,4 @@
-<?php namespace LDAPauth;
+<?php namespace LDAPauth; use \Config, \Exception, \DB;
 /**
  * LDAP Auth Driver for Laravel
  *
@@ -8,15 +8,25 @@
  */
 class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 
+	protected $conn;
+
 	public function __construct()
 	{
 		// Check if the ldap extension is installed
 		if ( ! function_exists('ldap_connect'))
 		{
-			throw new Exception('LDAPauth requires the php-ldap extension to be installed.');
+			throw new \Exception('LDAPauth requires the php-ldap extension to be installed.');
 		}
 
 		parent::__construct();
+	}
+
+	public function __destruct()
+	{
+		if ( ! is_null($this->conn))
+		{
+			ldap_unbind($this->conn);
+		}
 	}
 
 	/**
@@ -25,9 +35,39 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 	 * @param  int         $id
 	 * @return mixed|null
 	 */
-	public function retrieve($id)
+	public function retrieve($token)
 	{
-		return $id;
+		if (empty($token))
+		{
+			return;
+		}
+		
+		if (is_null($this->conn))
+		{
+			// Create a connection using a control account
+			try
+			{
+				$this->ldap_connect(Config::get('auth.ldap.control_user'), Config::get('auth.ldap.control_password'));
+			}
+			catch (Exception $e)
+			{
+				throw new Exception('LDAP Control account error: '.ldap_error($this->conn));
+				return;
+			}
+		}
+
+		try
+		{
+			if ($user = $this->get_user_by_dn($token))
+			{
+				return $user;
+			}
+			echo 'No user found for '.$token;
+		}
+		catch (Exception $e)
+		{
+			die($e->getMessage());
+		}
 	}
 
 	/**
@@ -38,44 +78,29 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 	 */
 	public function attempt($arguments = array())
 	{
-		$user = $this->get_user($arguments['username']);
-
 		// This driver uses a basic username and password authentication scheme
 		// so if the credentials match what is in the database we will just
 		// log the user into the application and remember them if asked.
+		$username = $arguments['username'];
 		$password = $arguments['password'];
 
-		$group = Config::get('auth.ldap.group', 'Users');
+		$group = Config::get('auth.ldap.group');
 
 		try
 		{
-			$userdn = $this->ldap_login($user, $password, $group);
-			return ! empty($userdn);
+			$user = $this->ldap_login($username, $password, $group);
+			return $this->login($user->dn, array_get($arguments, 'remember'));
 		}
-		catch (\Exception $e)
+		catch (Exception $e)
 		{
 			throw $e;
+			return false;
 		}
 
 		return false;
 	}
 
-	/**
-	 * Get the user from the database table by username.
-	 *
-	 * @param  mixed  $value
-	 * @return mixed
-	 */
-	protected function get_user($value)
-	{
-		$table = Config::get('auth.table');
-
-		$username = Config::get('auth.username');
-
-		return DB::table($table)->where($username, '=', $value)->first();
-	}
-
-	protected function ldap_login($user, $password, $group)
+	protected function ldap_connect($user, $password)
 	{
 		$config = Config::get('auth.ldap');
 
@@ -86,119 +111,134 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 			$config['basedn'] = sprintf('dc=%s,dc=%s',
 				substr($config['domain'], 0, $i),
 				substr($config['domain'], $i+1));
+			Config::set('auth.ldap.basedn', $config['basedn']);
 		}
 
 		// Connect to the controller
-		if ( ! $ad = ldap_connect("ldap://{$config['host']}.{$config['domain']}"))
+		if ( ! $this->conn = ldap_connect("ldap://{$config['host']}.{$config['domain']}"))
 		{
-			throw new \Exception("Could not connect to LDAP host {$config['host']}.{$config['domain']}: ".ldap_error($ad));
+			throw new Exception("Could not connect to LDAP host {$config['host']}.{$config['domain']}: ".ldap_error($this->conn));
 		}
 
-		// No idea what this does
-		ldap_set_option($ad, LDAP_OPT_PROTOCOL_VERSION, 3);
-		ldap_set_option($ad, LDAP_OPT_REFERRALS, 0);
+		// No idea what this does, but they're required for Windows AD
+		ldap_set_option($this->conn, LDAP_OPT_PROTOCOL_VERSION, 3);
+		ldap_set_option($this->conn, LDAP_OPT_REFERRALS, 0);
 
 		// Try to authenticate
-		if ( ! @ldap_bind($ad, "{$user}@{$config['domain']}", $password))
+		if ( ! @ldap_bind($this->conn, "{$user}@{$config['domain']}", $password))
 		{
-			throw new \Exception('Could not bind to AD: '.ldap_error($ad));
+			throw new Exception('Could not bind to AD: '."{$user}@{$config['domain']}: ".ldap_error($this->conn));
 		}
 
-		$groupdn = $this->get_dn($ad, $group, $basedn);
-		$userdn = $this->get_dn($ad, $user, $basedn);
+		return true;
+	}
 
-		if ($this->check_group_recursive($ad, $userdn, $groupdn))
+	protected function ldap_login($user, $password, $group = null)
+	{
+		if ( ! $this->ldap_connect($user, $password))
 		{
-			echo "You're authorized as ".$this->get_cn($userdn);
-		}
-		else
-		{
-			echo 'Authorization failed';
+			throw new Exception('Could not connect to LDAP: '.ldap_error($this->conn));
 		}
 
-		ldap_unbind($ad);
+		$group_obj = $this->get_account($group, Config::get('auth.ldap.basedn'));
+		$user_obj = $this->get_account($user, Config::get('auth.ldap.basedn'));
 
-		return $userdn;
+		if ($group && ! $this->check_group($user_obj['dn'], $group_obj['dn']))
+		{
+			throw new Exception('User is not part of the '.$group.' group.');
+		}
+
+		return $this->clean_user($user_obj);		
+	}
+
+	protected function clean_user($user)
+	{
+		if ( ! isset($user['cn'][0]))
+		{
+			throw new Exception('Not a valid user object');
+		}
+
+		return (object) array(
+			'dn' => $user['dn'],
+			'name' => $user['cn'][0],
+			//'username' => strtolower($user),
+			'firstname' => $user['givenname'][0],
+			'lastname' => $user['sn'][0],
+			'objectguid' => $user['objectguid'][0],
+			'memberof' => isset($user['memberof']) ? $user['memberof'] : array('count' => 0),
+		);
 	}
 
 	/**
-	 * Searches the LDAP tree for the specified account
+	 * Searches the LDAP tree for the specified account or group
 	 */
-	protected function get_dn($ad, $account, $basedn)
+	protected function get_account($account, $basedn)
 	{
-		$result = ldap_search($ad, $basedn, "(samaccountname={$account})", array('dn'));
+		if (is_null($this->conn))
+		{
+			throw new Exception('No LDAP connection bound');
+		}
+
+		$attr = array('dn', 'givenname', 'sn', 'cn', 'memberof', 'objectguid');
+		//$attr = array();
+		$result = ldap_search($this->conn, $basedn, "(samaccountname={$account})", $attr);
 		if ($result === false)
 		{
 			return null;
 		}
 
-		$entries = ldap_get_entries($ad, $result);
+		$entries = ldap_get_entries($this->conn, $result);
 		if ($entries['count'] > 0)
 		{
-			return $entries[0]['dn'];
+			return $entries[0];
 		}
-	}
-
-	/**
-	 * This function retrieves and returns CN from given DN
-	 */
-	public function get_cn($dn)
-	{
-		if (preg_match('/[^,]*/', $dn, $matchse, PREG_OFFSET_CAPTURE, 3))
-		{
-			return $matches[0][0];
-		}
-
-		throw new \Exception('Could not parse DN');
-	}
-
-	/**
-	 * Checks group membership of the user, searching only
-	 * in specified group (not recursively).
-	 */
-	public function check_group($ad, $userdn, $groupdn)
-	{
-		$result = ldap_read($ad, $userdn, "(memberof={$groupdn})", array('members'));
-		
-		if ($result === false)
-		{
-			return false;
-		};
-		
-		$entries = ldap_get_entries($ad, $result);
-
-		return ($entries['count'] > 0);
 	}
 
 	/**
 	 * Checks group membership of the user, searching
 	 * in the specified group and its children (recursively)
 	 */
-	function check_group_recursive($ad, $userdn, $groupdn)
+	public function check_group($userdn, $groupdn)
 	{
-		$result = ldap_read($ad, $userdn, '(objectclass=*)', array('memberof'));
-		if ($result === false)
+		if ( ! $user = $this->get_user_by_dn($userdn))
 		{
-			return false;
+			throw new Exception('Invalid userDN');
 		}
 
-		$entries = ldap_get_entries($ad, $result);
-		if ($entries['count'] <= 0 || empty($entries[0]['memberof']))
+		for ($i = 0; $i < $user->memberof['count']; $i++)
 		{
-			return false;
-		}
-
-		$entries = $entries[0]['memberof'];
-
-		for ($i = 0; $i < $entries['count']; $i++)
-		{
-			if ($entries[$i] == $groupdn || $this->check_group_recursive($ad, $entries[$i], $groupdn))
+			if ($groupdn == $user->memberof[$i])
 			{
 				return true;
 			}
 		}
 
+		die('group validation');
+
 		return false;
+	}
+
+	public function get_user_by_dn($userdn)
+	{
+		if (is_null($this->conn))
+		{
+			throw new Exception('No LDAP connection bound');
+		}
+
+		$result = ldap_read($this->conn, $userdn, '(objectclass=*)');
+
+		if ($result === false)
+		{
+			return null;
+		}
+
+		$entries = ldap_get_entries($this->conn, $result);
+		if ( ! $entries['count'])
+		{
+			return null;
+		}
+
+		return $this->clean_user($entries[0]);
 	}
 }
 

@@ -10,13 +10,8 @@
  * @link       http://cartalyst.com
  */
 
-// Autoload classes
-Autoloader::namespaces(array(
-    'LDAPauth' => Bundle::path('ldapauth'),
-));
-
 Autoloader::map(array(
-	//'Sentry\\SentryException' => __DIR__.DS.'/sentry'.EXT,
+	'LDAPauth\\LDAPauth' => __DIR__.DS.'ldap.php',
 ));
 
 // Set the global alias for Sentry
@@ -25,5 +20,5 @@ Autoloader::map(array(
 // Add Sentry as an auth driver
 Auth::extend('ldapauth', function()
 {
-	return new LDAPauth;
+	return new LDAPauth\LDAPauth;
 });
