@@ -31,19 +31,36 @@ Change the `driver` parameter in `application/config/auth.php` to `ldapauth`.
 And add the following to the end of that file:
 
 	'ldap' => array(
-		// Hostname of the domain controller
-		'host' => 'dc',
+	    // Hostname of the domain controller
+	    'host' => 'dc',
 
-		// The domain name
-		'domain' => 'example.com',
+	    // The domain name
+	    // null for openldap
+	    'domain' => 'example.com',
 
-		// Optionally require users to be in this group
-		//'group' => 'AppUsers',
+	    // LDAP type (openldap or ad)
+	    'ldap_type' => '',
+	    
+	    // require for openldap
+	    // null for ad
+	    'base_dn' => 'dc=example,dc=com',
+	    'user_dn' => 'ou=Users,dc=example,dc=com',
 
-		// Domain credentials the app should use to validate users
-		// This user doesn't need any privileges; it's just used to connect to the DC
-		'control_user' => 'LaravelApp',
-		'control_password' => 'thepassword',
+	    /** 
+	     * require attribure for user search 
+	     * ex. samaccountname for ad 
+	     * 	   uid for openldap
+	     */
+	    'user_search' => '',
+
+	    // Optionally require users to be in this group
+	    //'group' => 'AppUsers',
+
+	    // Domain credentials the app should use to validate users
+	    // This user doesn't need any privileges; it's just used to connect to the DC
+	    'control_user' => 'uid=test,ou=Users,dc=example,dc=com',
+	    'control_password' => 'test',
+
 	),
 
 
