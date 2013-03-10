@@ -35,13 +35,14 @@ And add the following to the end of that file:
 	    'host' => 'dc',
 
 	    // The domain name
-	    // null for openladp
+	    // null for openldap
 	    'domain' => 'example.com',
 
 	    // LDAP type (openldap or ad)
 	    'ldap_type' => '',
 	    
-	    // openldap
+	    // require for openldap
+	    // null for ad
 	    'base_dn' => 'dc=example,dc=com',
 	    'user_dn' => 'ou=Users,dc=example,dc=com',
 
