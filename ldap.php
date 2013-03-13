@@ -107,10 +107,7 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 		// Guess Base DN from domain
 		if ( ! isset($config['basedn']))
 		{
-			$i = strrpos($config['domain'], '.');
-			$config['basedn'] = sprintf('dc=%s,dc=%s',
-				substr($config['domain'], 0, $i),
-				substr($config['domain'], $i+1));
+			$config['basedn'] = 'dc='.str_replace('.', ',dc=', $config['domain']);
 			Config::set('auth.ldap.basedn', $config['basedn']);
 		}
 
