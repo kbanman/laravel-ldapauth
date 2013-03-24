@@ -295,6 +295,31 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 
 		return $this->clean_user($entries[0]);
 	}
+
+	public function search($basedn, $filter, $attributes = array()) {
+		
+		if (is_null($this->conn))
+		{
+			throw new Exception('No LDAP connection bound');
+		}
+
+		if (is_null($basedn) or $basedn = '') {
+			$basedn = Config::get('auth.ldap.user_dn');
+		}
+
+		$result = ldap_search($this->conn, $basedn, $filter, $attributes);
+
+		if ($result === false)
+		{
+			return null;
+		}
+
+		$entries = ldap_get_entries($this->conn, $result);
+		if ($entries['count'] > 0)
+		{
+			return $entries[0];
+		}
+	}
 }
 
 
