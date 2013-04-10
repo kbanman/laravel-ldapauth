@@ -10,6 +10,8 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 
 	protected $conn;
 
+	protected $ldap_type;
+
 	public function __construct()
 	{
 		// Check if the ldap extension is installed
@@ -17,6 +19,9 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 		{
 			throw new \Exception('LDAPauth requires the php-ldap extension to be installed.');
 		}
+
+		// load ldap_type at start
+		$this->ldap_type = Config::get('auth.ldap.ldap_type');
 
 		parent::__construct();
 	}
@@ -105,10 +110,13 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 		$config = Config::get('auth.ldap');
 
 		// Guess Base DN from domain
-		if ( ! isset($config['basedn']))
+		if ( ! isset($config['base_dn']))
 		{
-			$config['basedn'] = 'dc='.str_replace('.', ',dc=', $config['domain']);
-			Config::set('auth.ldap.basedn', $config['basedn']);
+			$i = strrpos($config['domain'], '.');
+			$config['base_dn'] = sprintf('dc=%s,dc=%s',
+				substr($config['domain'], 0, $i),
+				substr($config['domain'], $i+1));
+			Config::set('auth.ldap.base_dn', $config['base_dn']);
 		}
 
 		// Connect to the controller
@@ -121,10 +129,33 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 		ldap_set_option($this->conn, LDAP_OPT_PROTOCOL_VERSION, 3);
 		ldap_set_option($this->conn, LDAP_OPT_REFERRALS, 0);
 
-		// Try to authenticate
-		if ( ! @ldap_bind($this->conn, "{$user}@{$config['domain']}", $password))
-		{
-			throw new Exception('Could not bind to AD: '."{$user}@{$config['domain']}: ".ldap_error($this->conn));
+		if ( $this->ldap_type == 'openldap' ) {
+
+			$user_dn = '';
+
+			if ( ! isset($config['user_dn']))
+			{
+				$user_dn = $config['base_dn'];
+			} else {
+				$user_dn = $config['user_dn'];
+			}
+			
+			$user_search = $config['user_search'];
+
+			$rdn = "{$user_search}={$user},{$user_dn}";
+			// Try to authenticate
+			if ( ! @ldap_bind($this->conn, $rdn, $password))
+			{
+				throw new Exception('Could not bind to '."{$this->ldap_type}: {$rdn}: {$config['host']}.{$config['domain']}".ldap_error($this->conn));
+			}
+		} 
+
+		if ( $this->ldap_type == 'ad' ) {
+			// Try to authenticate
+			if ( ! @ldap_bind($this->conn, "{$user}@{$config['domain']}", $password))
+			{
+				throw new Exception('Could not bind to AD: '."{$user}@{$config['domain']}: ".ldap_error($this->conn));
+			}
 		}
 
 		return true;
@@ -137,8 +168,8 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 			throw new Exception('Could not connect to LDAP: '.ldap_error($this->conn));
 		}
 
-		$group_obj = $this->get_account($group, Config::get('auth.ldap.basedn'));
-		$user_obj = $this->get_account($user, Config::get('auth.ldap.basedn'));
+		$group_obj = $this->get_account($group, Config::get('auth.ldap.base_dn'));
+		$user_obj = $this->get_account($user, Config::get('auth.ldap.base_dn'));
 
 		if ($group && ! $this->check_group($user_obj['dn'], $group_obj['dn']))
 		{
@@ -155,15 +186,31 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 			throw new Exception('Not a valid user object');
 		}
 
-		return (object) array(
-			'dn' => $user['dn'],
-			'name' => $user['cn'][0],
-			//'username' => strtolower($user),
-			'firstname' => $user['givenname'][0],
-			'lastname' => $user['sn'][0],
-			'objectguid' => $user['objectguid'][0],
-			'memberof' => isset($user['memberof']) ? $user['memberof'] : array('count' => 0),
-		);
+		if ( $this->ldap_type == "openldap" )
+		{
+			return (object) array(
+				'dn' => $user['dn'],
+				'name' => $user['cn'][0],
+				// 'username' => strtolower($user),
+				'firstname' => $user['givenname'][0],
+				'lastname' => $user['sn'][0],
+				'uid' => $user['uid'][0],
+				'member' => isset($user['member']) ? $user['member'] : array('count' => 0),
+			);
+		}
+
+		if ( $this->ldap_type == "ad" )
+		{
+			return (object) array(
+				'dn' => $user['dn'],
+				'name' => $user['cn'][0],
+				// 'username' => strtolower($user),
+				'firstname' => $user['givenname'][0],
+				'lastname' => $user['sn'][0],
+				'objectguid' => $user['objectguid'][0],
+				'memberof' => isset($user['memberof']) ? $user['memberof'] : array('count' => 0),
+			);
+		}
 	}
 
 	/**
@@ -176,9 +223,20 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 			throw new Exception('No LDAP connection bound');
 		}
 
-		$attr = array('dn', 'givenname', 'sn', 'cn', 'memberof', 'objectguid');
-		//$attr = array();
-		$result = ldap_search($this->conn, $basedn, "(samaccountname={$account})", $attr);
+		$attr = array();
+
+		if ( $this->ldap_type == "openldap" )
+		{
+			$attr = array('dn', 'givenname', 'sn', 'cn', 'member', 'uid');
+		}
+
+		if ( $this->ldap_type == "ad" )
+		{
+			$attr = array('dn', 'givenname', 'sn', 'cn', 'memberof', 'objectguid');
+		}
+
+		$user_search = Config::get('auth.ldap.user_search');
+		$result = ldap_search($this->conn, $basedn, "({$user_search}={$account})", $attr);
 		if ($result === false)
 		{
 			return null;
@@ -236,6 +294,31 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 		}
 
 		return $this->clean_user($entries[0]);
+	}
+
+	public function search($basedn, $filter, $attributes = array()) {
+		
+		if (is_null($this->conn))
+		{
+			throw new Exception('No LDAP connection bound');
+		}
+
+		if (is_null($basedn) or $basedn = '') {
+			$basedn = Config::get('auth.ldap.user_dn');
+		}
+
+		$result = ldap_search($this->conn, $basedn, $filter, $attributes);
+
+		if ($result === false)
+		{
+			return null;
+		}
+
+		$entries = ldap_get_entries($this->conn, $result);
+		if ($entries['count'] > 0)
+		{
+			return $entries[0];
+		}
 	}
 }
 

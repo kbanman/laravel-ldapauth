@@ -14,8 +14,8 @@ Autoloader::map(array(
 	'LDAPauth\\LDAPauth' => __DIR__.DS.'ldap.php',
 ));
 
-// Set the global alias for Sentry
-//Autoloader::alias('Sentry\\Sentry', 'Sentry');
+// Set the global alias for LDAPauth
+Autoloader::alias('LDAPauth\\LDAPauth', 'LDAPauth');
 
 // Add Sentry as an auth driver
 Auth::extend('ldapauth', function()
