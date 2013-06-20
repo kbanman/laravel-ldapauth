@@ -303,7 +303,7 @@ class LDAPauth extends \Laravel\Auth\Drivers\Driver {
 			throw new Exception('No LDAP connection bound');
 		}
 
-		if (is_null($basedn) or $basedn = '') {
+		if (is_null($basedn) or $basedn == '') {
 			$basedn = Config::get('auth.ldap.user_dn');
 		}
 
